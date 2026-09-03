@@ -6,6 +6,84 @@ button {
   border-radius: 4px;
 }
 
-button:hover {
+button:hover:not(:disabled) {
   background: #186faf;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+button.secondary {
+  margin-left: 12px;
+  background: #52606d;
+}
+
+.request-form {
+  margin-bottom: 20px;
+  padding: 16px;
+  border: 1px solid #d9e2ec;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.request-form h3 {
+  margin-top: 0;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-weight: 600;
+}
+
+input,
+select {
+  padding: 7px 8px;
+  border: 1px solid #bcccdc;
+  border-radius: 4px;
+  font: inherit;
+}
+
+.message {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border-radius: 4px;
+  background: #e6f6ff;
+}
+
+.message.success {
+  color: #14532d;
+  background: #dcfce7;
+}
+
+.message.error {
+  color: #8a1c1c;
+  background: #ffe3e3;
+}
+
+.field-error,
+.row-error {
+  color: #b42318;
+  font-size: 0.875rem;
+  font-weight: 400;
+}
+
+.row-error {
+  display: block;
+  margin-top: 6px;
+  max-width: 240px;
+}
+
+.table-container {
+  overflow-x: auto;
 }

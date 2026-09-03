@@ -1,10 +1,83 @@
 <h2>Leave Requests</h2>
 
-<!-- TODO (candidate): add the "new request" form here, with validation. -->
+<section class="request-form">
+  <h3>New leave request</h3>
 
-<div *ngIf="loading">Loading...</div>
+  <form [formGroup]="requestForm" (ngSubmit)="submitRequest()">
+    <div class="form-grid">
+      <label>
+        Employee
+        <select formControlName="employeeId">
+          <option [ngValue]="null" disabled>Select an employee</option>
+          <option *ngFor="let employee of employees" [ngValue]="employee.id">
+            {{ employee.name }}
+          </option>
+        </select>
+        <span class="field-error"
+              *ngIf="requestForm.controls.employeeId.touched && requestForm.controls.employeeId.hasError('required')">
+          Employee is required.
+        </span>
+      </label>
 
-<table *ngIf="!loading">
+      <label>
+        Leave type
+        <select formControlName="type">
+          <option [ngValue]="null" disabled>Select a leave type</option>
+          <option *ngFor="let leaveType of leaveTypes" [ngValue]="leaveType.value">
+            {{ leaveType.label }}
+          </option>
+        </select>
+        <span class="field-error"
+              *ngIf="requestForm.controls.type.touched && requestForm.controls.type.hasError('required')">
+          Leave type is required.
+        </span>
+      </label>
+
+      <label>
+        Start date
+        <input type="date" formControlName="startDate" />
+        <span class="field-error"
+              *ngIf="requestForm.controls.startDate.touched && requestForm.controls.startDate.hasError('required')">
+          Start date is required.
+        </span>
+      </label>
+
+      <label>
+        End date
+        <input type="date" formControlName="endDate" />
+        <span class="field-error"
+              *ngIf="requestForm.controls.endDate.touched && requestForm.controls.endDate.hasError('required')">
+          End date is required.
+        </span>
+      </label>
+    </div>
+
+    <p class="field-error"
+       *ngIf="requestForm.hasError('dateOrder') && (requestForm.controls.startDate.touched || requestForm.controls.endDate.touched)">
+      Start date must not be after end date.
+    </p>
+
+    <p class="message error" *ngIf="formError" role="alert">{{ formError }}</p>
+
+    <button type="submit" [disabled]="requestForm.invalid || submitting">
+      {{ submitting ? 'Submitting...' : 'Submit request' }}
+    </button>
+  </form>
+</section>
+
+<p class="message success" *ngIf="successMessage" aria-live="polite">{{ successMessage }}</p>
+
+<p class="message" *ngIf="loading" aria-live="polite">Loading leave requests...</p>
+
+<div class="message error" *ngIf="!loading && loadError" role="alert">
+  {{ loadError }}
+  <button type="button" class="secondary" (click)="load()">Try again</button>
+</div>
+
+<p *ngIf="!loading && !loadError && requests.length === 0">No leave requests found.</p>
+
+<div class="table-container" *ngIf="!loading && !loadError && requests.length > 0">
+<table>
   <thead>
     <tr>
       <th>#</th>
@@ -20,15 +93,24 @@
   <tbody>
     <tr *ngFor="let r of requests">
       <td>{{ r.id }}</td>
-      <td>{{ r.employee?.name }}</td>
+      <td>{{ employeeName(r) }}</td>
       <td>{{ typeLabel(r.type) }}</td>
       <td>{{ r.startDate | date: 'dd/MM/yyyy' }}</td>
       <td>{{ r.endDate | date: 'dd/MM/yyyy' }}</td>
       <td>{{ r.days }}</td>
       <td>{{ statusLabel(r.status) }}</td>
       <td>
-        <button *ngIf="r.status == 0" (click)="approve(r.id)">Approve</button>
+        <button *ngIf="r.status === LeaveStatus.Pending"
+                type="button"
+                [disabled]="approvingRequestIds.has(r.id)"
+                (click)="approve(r.id)">
+          {{ approvingRequestIds.has(r.id) ? 'Approving...' : 'Approve' }}
+        </button>
+        <span class="row-error" *ngIf="approvalErrors[r.id]" role="alert">
+          {{ approvalErrors[r.id] }}
+        </span>
       </td>
     </tr>
   </tbody>
 </table>
+</div>
