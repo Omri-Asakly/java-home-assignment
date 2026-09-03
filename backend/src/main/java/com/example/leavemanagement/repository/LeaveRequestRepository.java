@@ -21,17 +21,17 @@ public interface LeaveRequestRepository extends JpaRepository<LeaveRequest, Long
     Optional<Long> findEmployeeIdByRequestId(@Param("requestId") Long requestId);
 
     @Query("""
-            select coalesce(sum(request.days), 0)
+            select request
             from LeaveRequest request
             where request.employeeId = :employeeId
               and request.type = :type
               and request.status = :status
-              and request.startDate >= :yearStart
-              and request.endDate <= :yearEnd
+              and request.startDate <= :yearEnd
+              and request.endDate >= :yearStart
             """)
-    long sumDaysForYear(@Param("employeeId") Long employeeId,
-                        @Param("type") LeaveType type,
-                        @Param("status") LeaveStatus status,
-                        @Param("yearStart") LocalDate yearStart,
-                        @Param("yearEnd") LocalDate yearEnd);
+    List<LeaveRequest> findOverlapping(@Param("employeeId") Long employeeId,
+                                       @Param("type") LeaveType type,
+                                       @Param("status") LeaveStatus status,
+                                       @Param("yearStart") LocalDate yearStart,
+                                       @Param("yearEnd") LocalDate yearEnd);
 }

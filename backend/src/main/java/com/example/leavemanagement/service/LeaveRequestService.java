@@ -46,8 +46,7 @@ public class LeaveRequestService {
                 .orElseThrow(() -> new EntityNotFoundException("Employee not found"));
 
         if (dto.getType() == LeaveType.VACATION) {
-            validateSingleYearVacation(dto.getStartDate(), dto.getEndDate());
-            validateVacationBalance(employee, dto.getStartDate(), requestedDays,
+            validateVacationBalance(employee, dto.getStartDate(), dto.getEndDate(),
                     new InvalidLeaveRequestException("Not enough vacation balance"));
         }
 
@@ -79,10 +78,9 @@ public class LeaveRequestService {
             throw new LeaveRequestConflictException("Only pending leave requests can be approved");
         }
 
-        int requestedDays = validateAndCalculateDays(request.getStartDate(), request.getEndDate());
+        validateAndCalculateDays(request.getStartDate(), request.getEndDate());
         if (request.getType() == LeaveType.VACATION) {
-            validateSingleYearVacation(request.getStartDate(), request.getEndDate());
-            validateVacationBalance(employee, request.getStartDate(), requestedDays,
+            validateVacationBalance(employee, request.getStartDate(), request.getEndDate(),
                     new LeaveRequestConflictException("Not enough vacation balance to approve this request"));
         }
 
@@ -105,24 +103,44 @@ public class LeaveRequestService {
         return (int) days;
     }
 
-    private void validateSingleYearVacation(LocalDate startDate, LocalDate endDate) {
-        if (startDate.getYear() != endDate.getYear()) {
-            throw new InvalidLeaveRequestException(
-                    "Vacation requests spanning multiple calendar years must be submitted as separate requests");
+    private void validateVacationBalance(Employee employee,
+                                          LocalDate startDate,
+                                          LocalDate endDate,
+                                          RuntimeException insufficientBalanceException) {
+        LocalDate yearStart = LocalDate.of(startDate.getYear(), 1, 1);
+
+        while (!yearStart.isAfter(endDate)) {
+            LocalDate currentYearStart = yearStart;
+            LocalDate yearEnd = LocalDate.of(currentYearStart.getYear(), 12, 31);
+            long requestedDays = calculateOverlapDays(startDate, endDate, currentYearStart, yearEnd);
+            long usedDays = leaveRequestRepository.findOverlapping(
+                            employee.getId(), LeaveType.VACATION, LeaveStatus.APPROVED,
+                            currentYearStart, yearEnd)
+                    .stream()
+                    .mapToLong(request -> calculateOverlapDays(
+                            request.getStartDate(), request.getEndDate(), currentYearStart, yearEnd))
+                    .sum();
+
+            if (usedDays + requestedDays > employee.getAnnualQuota()) {
+                throw insufficientBalanceException;
+            }
+
+            if (!yearEnd.isBefore(endDate)) {
+                break;
+            }
+            yearStart = yearEnd.plusDays(1);
         }
     }
 
-    private void validateVacationBalance(Employee employee,
-                                          LocalDate startDate,
-                                          int requestedDays,
-                                          RuntimeException insufficientBalanceException) {
-        LocalDate yearStart = startDate.withDayOfYear(1);
-        LocalDate yearEnd = startDate.withDayOfYear(startDate.lengthOfYear());
-        long usedDays = leaveRequestRepository.sumDaysForYear(
-                employee.getId(), LeaveType.VACATION, LeaveStatus.APPROVED, yearStart, yearEnd);
+    private long calculateOverlapDays(LocalDate requestStart,
+                                      LocalDate requestEnd,
+                                      LocalDate periodStart,
+                                      LocalDate periodEnd) {
+        LocalDate overlapStart = requestStart.isAfter(periodStart) ? requestStart : periodStart;
+        LocalDate overlapEnd = requestEnd.isBefore(periodEnd) ? requestEnd : periodEnd;
 
-        if (usedDays + requestedDays > employee.getAnnualQuota()) {
-            throw insufficientBalanceException;
-        }
+        return overlapStart.isAfter(overlapEnd)
+                ? 0
+                : ChronoUnit.DAYS.between(overlapStart, overlapEnd) + 1;
     }
 }

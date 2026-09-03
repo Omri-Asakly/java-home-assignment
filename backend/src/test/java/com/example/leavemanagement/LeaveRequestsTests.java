@@ -131,15 +131,70 @@ class LeaveRequestsTests {
     }
 
     @Test
-    void crossYearVacationIsRejected() throws Exception {
+    void existingApprovedCrossYearVacationIsAllocatedToEachYear() throws Exception {
         Employee employee = saveEmployee(20);
+        saveRequest(employee, LocalDate.of(2025, 12, 30), LocalDate.of(2026, 1, 4),
+                LeaveType.VACATION, LeaveStatus.APPROVED);
 
-        create(createDto(employee, LocalDate.of(2026, 12, 30), LocalDate.of(2027, 1, 2)))
+        create(createDto(employee, LocalDate.of(2026, 2, 1), LocalDate.of(2026, 2, 16)))
+                .andExpect(status().isOk());
+
+        create(createDto(employee, LocalDate.of(2026, 3, 1), LocalDate.of(2026, 3, 17)))
+                .andExpect(status().isBadRequest());
+
+        assertEquals(2, leaveRequests.count());
+    }
+
+    @Test
+    void crossYearVacationSucceedsWhenEveryYearHasEnoughQuota() throws Exception {
+        Employee employee = saveEmployee(3);
+
+        create(createDto(employee, LocalDate.of(2026, 12, 29), LocalDate.of(2027, 1, 3)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.days").value(6));
+
+        assertEquals(1, leaveRequests.count());
+    }
+
+    @Test
+    void crossYearVacationIsRejectedWhenFirstYearExceedsQuota() throws Exception {
+        Employee employee = saveEmployee(3);
+        saveRequest(employee, LocalDate.of(2026, 6, 1), LocalDate.of(2026, 6, 1),
+                LeaveType.VACATION, LeaveStatus.APPROVED);
+
+        create(createDto(employee, LocalDate.of(2026, 12, 29), LocalDate.of(2027, 1, 3)))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value(
-                        "Vacation requests spanning multiple calendar years must be submitted as separate requests"));
+                .andExpect(jsonPath("$.message").value("Not enough vacation balance"));
 
-        assertEquals(0, leaveRequests.count());
+        assertEquals(1, leaveRequests.count());
+    }
+
+    @Test
+    void crossYearVacationIsRejectedAtomicallyWhenSecondYearExceedsQuota() throws Exception {
+        Employee employee = saveEmployee(3);
+        saveRequest(employee, LocalDate.of(2027, 6, 1), LocalDate.of(2027, 6, 1),
+                LeaveType.VACATION, LeaveStatus.APPROVED);
+
+        create(createDto(employee, LocalDate.of(2026, 12, 29), LocalDate.of(2027, 1, 3)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Not enough vacation balance"));
+
+        assertEquals(1, leaveRequests.count());
+    }
+
+    @Test
+    void approvalRevalidatesEveryYearOfCrossYearVacation() throws Exception {
+        Employee employee = saveEmployee(3);
+        LeaveRequest pending = leaveRequestService.create(
+                createDto(employee, LocalDate.of(2026, 12, 29), LocalDate.of(2027, 1, 3)));
+        saveRequest(employee, LocalDate.of(2027, 6, 1), LocalDate.of(2027, 6, 1),
+                LeaveType.VACATION, LeaveStatus.APPROVED);
+
+        approve(pending.getId())
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value("Not enough vacation balance to approve this request"));
+
+        assertEquals(LeaveStatus.PENDING, leaveRequests.findById(pending.getId()).orElseThrow().getStatus());
     }
 
     @Test
@@ -275,9 +330,12 @@ class LeaveRequestsTests {
 
             assertEquals(1, frequency(outcomes, ApprovalOutcome.APPROVED));
             assertEquals(1, frequency(outcomes, ApprovalOutcome.CONFLICT));
-            assertEquals(5, leaveRequests.sumDaysForYear(
-                    employee.getId(), LeaveType.VACATION, LeaveStatus.APPROVED,
-                    LocalDate.of(2026, 1, 1), LocalDate.of(2026, 12, 31)));
+            assertEquals(5, leaveRequests.findOverlapping(
+                            employee.getId(), LeaveType.VACATION, LeaveStatus.APPROVED,
+                            LocalDate.of(2026, 1, 1), LocalDate.of(2026, 12, 31))
+                    .stream()
+                    .mapToInt(LeaveRequest::getDays)
+                    .sum());
         } finally {
             start.countDown();
             executor.shutdownNow();
