@@ -146,6 +146,78 @@ class LeaveRequestsTests {
     }
 
     @Test
+    void vacationBalanceReturnsUsedAndRemainingDays() throws Exception {
+        Employee employee = saveEmployee(20);
+        saveRequest(employee, LocalDate.of(2026, 1, 1), LocalDate.of(2026, 1, 18),
+                LeaveType.VACATION, LeaveStatus.APPROVED);
+
+        vacationBalance(employee.getId(), 2026)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.employeeId").value(employee.getId()))
+                .andExpect(jsonPath("$.year").value(2026))
+                .andExpect(jsonPath("$.annualQuota").value(20))
+                .andExpect(jsonPath("$.used").value(18))
+                .andExpect(jsonPath("$.remaining").value(2));
+    }
+
+    @Test
+    void vacationBalanceDoesNotCountApprovedLeaveFromAnotherYear() throws Exception {
+        Employee employee = saveEmployee(20);
+        saveRequest(employee, LocalDate.of(2025, 1, 1), LocalDate.of(2025, 1, 18),
+                LeaveType.VACATION, LeaveStatus.APPROVED);
+
+        vacationBalance(employee.getId(), 2026)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.used").value(0))
+                .andExpect(jsonPath("$.remaining").value(20));
+    }
+
+    @Test
+    void vacationBalanceCountsOnlyCrossYearOverlap() throws Exception {
+        Employee employee = saveEmployee(20);
+        saveRequest(employee, LocalDate.of(2025, 12, 30), LocalDate.of(2026, 1, 4),
+                LeaveType.VACATION, LeaveStatus.APPROVED);
+
+        vacationBalance(employee.getId(), 2026)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.used").value(4))
+                .andExpect(jsonPath("$.remaining").value(16));
+    }
+
+    @Test
+    void vacationBalanceDoesNotCountPendingVacation() throws Exception {
+        Employee employee = saveEmployee(20);
+        saveRequest(employee, LocalDate.of(2026, 1, 1), LocalDate.of(2026, 1, 18),
+                LeaveType.VACATION, LeaveStatus.PENDING);
+
+        vacationBalance(employee.getId(), 2026)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.used").value(0))
+                .andExpect(jsonPath("$.remaining").value(20));
+    }
+
+    @Test
+    void vacationBalanceDoesNotCountSickOrUnpaidLeave() throws Exception {
+        Employee employee = saveEmployee(20);
+        saveRequest(employee, LocalDate.of(2026, 1, 1), LocalDate.of(2026, 1, 10),
+                LeaveType.SICK, LeaveStatus.APPROVED);
+        saveRequest(employee, LocalDate.of(2026, 2, 1), LocalDate.of(2026, 2, 10),
+                LeaveType.UNPAID, LeaveStatus.APPROVED);
+
+        vacationBalance(employee.getId(), 2026)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.used").value(0))
+                .andExpect(jsonPath("$.remaining").value(20));
+    }
+
+    @Test
+    void vacationBalanceForNonexistentEmployeeReturnsNotFound() throws Exception {
+        vacationBalance(Long.MAX_VALUE, 2026)
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.message").value("Employee not found"));
+    }
+
+    @Test
     void crossYearVacationSucceedsWhenEveryYearHasEnoughQuota() throws Exception {
         Employee employee = saveEmployee(3);
 
@@ -398,6 +470,11 @@ class LeaveRequestsTests {
 
     private ResultActions approve(Long requestId) throws Exception {
         return mockMvc.perform(post("/api/leave-requests/{id}/approve", requestId));
+    }
+
+    private ResultActions vacationBalance(Long employeeId, int year) throws Exception {
+        return mockMvc.perform(get("/api/employees/{employeeId}/vacation-balance", employeeId)
+                .param("year", Integer.toString(year)));
     }
 
     private enum ApprovalOutcome {

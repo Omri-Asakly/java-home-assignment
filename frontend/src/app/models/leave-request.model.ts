@@ -34,6 +34,14 @@ export interface CreateLeaveRequest {
   endDate: string;
 }
 
+export interface VacationBalance {
+  employeeId: number;
+  year: number;
+  annualQuota: number;
+  used: number;
+  remaining: number;
+}
+
 export interface ApiError {
   message: string;
 }

@@ -5,7 +5,7 @@
 - **Leave-request flow:** I moved validation, quota calculation, creation, and approval from `LeaveRequestsController` into `LeaveRequestService`. For this flow, the structure is Controller -> Service -> Repository: the controller handles HTTP, the service owns business rules and transaction boundaries, and repositories own persistence queries.
 - **Deliberately small design:** I did not introduce service interfaces, mapper frameworks, CQRS, events, NgRx, or similar abstractions. They would add indirection without improving this take-home's small use case. The read-only employee lookup remains simple and accesses its repository directly.
 - **HTTP errors:** Bean Validation and a small `RestControllerAdvice` return 400 for invalid input, 404 for missing resources, and 409 for approval conflicts. The shared `{ "message": "..." }` body keeps frontend error handling straightforward.
-- **Frontend:** Leave requests and numeric API enums are typed instead of using `any`, and `HttpClient` calls live in a typed API service. The component uses a Reactive Form with required-field and date-order validation. It tracks submission and approval state separately, displays success/errors without browser alerts, and updates the affected local item after create or approve instead of reloading the full list.
+- **Frontend:** Leave requests and numeric API enums are typed instead of using `any`, and `HttpClient` calls live in a typed API service. The component uses a Reactive Form with required-field and date-order validation. It tracks submission and approval state separately, displays success/errors without browser alerts, and updates the affected local item after create or approve instead of reloading the full list. Vacation balance is calculated by the backend as the source of truth; the UI only displays the returned balance, with a separate row for each year in a cross-year range.
 
 ## 2. Vacation quota
 
@@ -37,13 +37,19 @@ Authentication and authorization remain a production limitation; approval would 
 
 ## 5. Testing
 
-Backend integration tests use Spring Boot, MockMvc, and PostgreSQL 16 through Testcontainers. The 20 test executions cover quota success, rejection above the remaining quota, exact remaining quota, prior-year isolation, date and required-field validation, missing employees, approval states, approval-time quota revalidation, parameterized search behavior, and concurrent approvals. Cross-year tests cover successful allocation, failure in either affected year, atomic rejection, correct allocation of existing approved cross-year leave, and approval-time revalidation.
+Backend integration tests use Spring Boot, MockMvc, and PostgreSQL 16 through Testcontainers. The 26 test executions cover quota success, rejection above the remaining quota, exact remaining quota, prior-year isolation, date and required-field validation, missing employees, approval states, approval-time quota revalidation, parameterized search behavior, and concurrent approvals. Cross-year tests cover successful allocation, failure in either affected year, atomic rejection, correct allocation of existing approved cross-year leave, and approval-time revalidation. Balance endpoint tests verify yearly usage, cross-year overlap, status/type filtering, and missing employees.
 
 The concurrency test starts two approvals together for requests that fit individually but not jointly, and asserts one approval and one conflict.
 
 The existing Angular smoke test passes, and the production Angular build succeeds with strict TypeScript/template checking. Frontend behavioral unit-test coverage remains limited.
 
 ## 6. Deferred work
+
+### Overlapping leave requests
+
+The current implementation does not prevent an employee from creating leave requests that fully or partially overlap an existing leave period. Because approved requests are counted independently, overlapping approved vacation requests can cause the same calendar days to be counted more than once against the employee's annual quota.
+
+The assignment does not define whether overlap should be checked against pending requests, approved requests only, or across different leave types, so I did not introduce an additional business rule. In a production implementation, I would clarify the expected policy and enforce overlap validation during approval while holding the same employee-level database lock used for quota validation.
 
 - **Authentication and authorization:** add identity and restrict approval to an appropriate manager or HR role.
 - **Schema migrations and enum persistence:** replace `ddl-auto: update` with Flyway and migrate ordinal enums through a versioned compatibility plan.

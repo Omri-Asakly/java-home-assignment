@@ -57,6 +57,20 @@
       Start date must not be after end date.
     </p>
 
+    <section class="vacation-balance" *ngIf="showVacationBalance" aria-live="polite">
+      <h4>Vacation balance</h4>
+      <p *ngIf="!hasValidBalanceDates">Select a valid start and end date to view the balance.</p>
+      <p *ngIf="balanceLoading">Loading vacation balance...</p>
+      <p class="field-error" *ngIf="!balanceLoading && balanceError" role="alert">
+        {{ balanceError }}
+      </p>
+      <div class="balance-row" *ngFor="let balance of vacationBalances">
+        <strong>{{ balance.year }}</strong>
+        <span>{{ balance.used }} used / {{ balance.annualQuota }} days</span>
+        <span>{{ balance.remaining }} days remaining</span>
+      </div>
+    </section>
+
     <p class="message error" *ngIf="formError" role="alert">{{ formError }}</p>
 
     <button type="submit" [disabled]="requestForm.invalid || submitting">

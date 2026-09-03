@@ -78,6 +78,30 @@ select {
   font-weight: 400;
 }
 
+.vacation-balance {
+  margin: 0 0 14px;
+  padding: 12px;
+  border: 1px solid #bcccdc;
+  border-radius: 4px;
+  background: #f0f4f8;
+}
+
+.vacation-balance h4,
+.vacation-balance p {
+  margin: 0 0 8px;
+}
+
+.balance-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 6px 0;
+}
+
+.balance-row + .balance-row {
+  border-top: 1px solid #d9e2ec;
+}
+
 .row-error {
   display: block;
   margin-top: 6px;

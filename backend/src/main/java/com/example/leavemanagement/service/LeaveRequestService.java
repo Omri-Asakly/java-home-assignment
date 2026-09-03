@@ -1,6 +1,7 @@
 package com.example.leavemanagement.service;
 
 import com.example.leavemanagement.dto.CreateLeaveRequestDto;
+import com.example.leavemanagement.dto.VacationBalanceDto;
 import com.example.leavemanagement.exception.InvalidLeaveRequestException;
 import com.example.leavemanagement.exception.LeaveRequestConflictException;
 import com.example.leavemanagement.model.Employee;
@@ -37,6 +38,22 @@ public class LeaveRequestService {
     @Transactional(readOnly = true)
     public List<LeaveRequest> search(String name) {
         return leaveRequestRepository.findByEmployee_NameContainingIgnoreCaseOrderByStartDateDesc(name);
+    }
+
+    @Transactional(readOnly = true)
+    public VacationBalanceDto getVacationBalance(Long employeeId, int year) {
+        Employee employee = employeeRepository.findById(employeeId)
+                .orElseThrow(() -> new EntityNotFoundException("Employee not found"));
+        LocalDate yearStart = LocalDate.of(year, 1, 1);
+        LocalDate yearEnd = LocalDate.of(year, 12, 31);
+        long usedDays = calculateApprovedVacationDaysForYear(employeeId, yearStart, yearEnd);
+
+        return new VacationBalanceDto(
+                employeeId,
+                year,
+                employee.getAnnualQuota(),
+                usedDays,
+                Math.max(employee.getAnnualQuota() - usedDays, 0));
     }
 
     @Transactional
@@ -113,13 +130,8 @@ public class LeaveRequestService {
             LocalDate currentYearStart = yearStart;
             LocalDate yearEnd = LocalDate.of(currentYearStart.getYear(), 12, 31);
             long requestedDays = calculateOverlapDays(startDate, endDate, currentYearStart, yearEnd);
-            long usedDays = leaveRequestRepository.findOverlapping(
-                            employee.getId(), LeaveType.VACATION, LeaveStatus.APPROVED,
-                            currentYearStart, yearEnd)
-                    .stream()
-                    .mapToLong(request -> calculateOverlapDays(
-                            request.getStartDate(), request.getEndDate(), currentYearStart, yearEnd))
-                    .sum();
+            long usedDays = calculateApprovedVacationDaysForYear(
+                    employee.getId(), currentYearStart, yearEnd);
 
             if (usedDays + requestedDays > employee.getAnnualQuota()) {
                 throw insufficientBalanceException;
@@ -130,6 +142,17 @@ public class LeaveRequestService {
             }
             yearStart = yearEnd.plusDays(1);
         }
+    }
+
+    private long calculateApprovedVacationDaysForYear(Long employeeId,
+                                                       LocalDate yearStart,
+                                                       LocalDate yearEnd) {
+        return leaveRequestRepository.findOverlapping(
+                        employeeId, LeaveType.VACATION, LeaveStatus.APPROVED, yearStart, yearEnd)
+                .stream()
+                .mapToLong(request -> calculateOverlapDays(
+                        request.getStartDate(), request.getEndDate(), yearStart, yearEnd))
+                .sum();
     }
 
     private long calculateOverlapDays(LocalDate requestStart,

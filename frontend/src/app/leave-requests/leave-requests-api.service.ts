@@ -4,7 +4,8 @@ import { Observable } from 'rxjs';
 import {
   CreateLeaveRequest,
   Employee,
-  LeaveRequest
+  LeaveRequest,
+  VacationBalance
 } from '../models/leave-request.model';
 
 @Injectable({ providedIn: 'root' })
@@ -27,5 +28,12 @@ export class LeaveRequestsApiService {
 
   listEmployees(): Observable<Employee[]> {
     return this.http.get<Employee[]>(`${this.apiUrl}/employees`);
+  }
+
+  getVacationBalance(employeeId: number, year: number): Observable<VacationBalance> {
+    return this.http.get<VacationBalance>(
+      `${this.apiUrl}/employees/${employeeId}/vacation-balance`,
+      { params: { year } }
+    );
   }
 }

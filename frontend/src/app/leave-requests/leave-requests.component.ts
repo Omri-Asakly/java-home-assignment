@@ -10,14 +10,15 @@ import {
   ValidationErrors,
   Validators
 } from '@angular/forms';
-import { finalize, forkJoin } from 'rxjs';
+import { catchError, finalize, forkJoin, map, merge, of, startWith, Subject, switchMap } from 'rxjs';
 import {
   ApiError,
   CreateLeaveRequest,
   Employee,
   LeaveRequest,
   LeaveStatus,
-  LeaveType
+  LeaveType,
+  VacationBalance
 } from '../models/leave-request.model';
 import { LeaveRequestsApiService } from './leave-requests-api.service';
 
@@ -30,6 +31,7 @@ import { LeaveRequestsApiService } from './leave-requests-api.service';
 })
 export class LeaveRequestsComponent implements OnInit {
   readonly LeaveStatus = LeaveStatus;
+  readonly LeaveType = LeaveType;
   readonly leaveTypes = [
     { value: LeaveType.Vacation, label: 'Vacation' },
     { value: LeaveType.Sick, label: 'Sick' },
@@ -52,6 +54,11 @@ export class LeaveRequestsComponent implements OnInit {
   successMessage = '';
   approvalErrors: Record<number, string> = {};
   approvingRequestIds = new Set<number>();
+  vacationBalances: VacationBalance[] = [];
+  balanceLoading = false;
+  balanceError = '';
+
+  private readonly balanceRefresh = new Subject<void>();
 
   private readonly typeLabels: Record<LeaveType, string> = {
     [LeaveType.Vacation]: 'Vacation',
@@ -71,6 +78,7 @@ export class LeaveRequestsComponent implements OnInit {
 
   ngOnInit(): void {
     this.load();
+    this.watchVacationBalance();
   }
 
   load(): void {
@@ -159,6 +167,9 @@ export class LeaveRequestsComponent implements OnInit {
           request.id === approved.id ? this.withEmployee(approved) : request
         );
         this.successMessage = `Request #${approved.id} approved successfully.`;
+        if (this.requestForm.controls.employeeId.value === approved.employeeId) {
+          this.balanceRefresh.next();
+        }
       },
       error: (error: unknown) => {
         this.approvalErrors = {
@@ -181,6 +192,71 @@ export class LeaveRequestsComponent implements OnInit {
     return request.employee?.name
       ?? this.employees.find(employee => employee.id === request.employeeId)?.name
       ?? 'Unknown employee';
+  }
+
+  get showVacationBalance(): boolean {
+    return this.requestForm.controls.employeeId.value !== null
+      && this.requestForm.controls.type.value === LeaveType.Vacation;
+  }
+
+  get hasValidBalanceDates(): boolean {
+    return this.getBalanceQuery() !== null;
+  }
+
+  private watchVacationBalance(): void {
+    merge(this.requestForm.valueChanges, this.balanceRefresh).pipe(
+      startWith(null),
+      switchMap(() => {
+        const query = this.getBalanceQuery();
+        this.vacationBalances = [];
+        this.balanceError = '';
+
+        if (query === null) {
+          this.balanceLoading = false;
+          return of({ balances: [] as VacationBalance[], error: '' });
+        }
+
+        this.balanceLoading = true;
+        return forkJoin(query.years.map(year =>
+          this.api.getVacationBalance(query.employeeId, year)
+        )).pipe(
+          map(balances => ({ balances, error: '' })),
+          catchError(() => of({
+            balances: [] as VacationBalance[],
+            error: 'Could not load vacation balance.'
+          }))
+        );
+      }),
+      takeUntilDestroyed(this.destroyRef)
+    ).subscribe(result => {
+      this.balanceLoading = false;
+      this.vacationBalances = result.balances;
+      this.balanceError = result.error;
+    });
+  }
+
+  private getBalanceQuery(): { employeeId: number; years: number[] } | null {
+    const value = this.requestForm.getRawValue();
+    if (value.employeeId === null
+        || value.type !== LeaveType.Vacation
+        || !value.startDate
+        || !value.endDate
+        || value.startDate > value.endDate) {
+      return null;
+    }
+
+    const startYear = Number(value.startDate.slice(0, 4));
+    const endYear = Number(value.endDate.slice(0, 4));
+    if (!Number.isInteger(startYear) || !Number.isInteger(endYear)) {
+      return null;
+    }
+
+    const years: number[] = [];
+    for (let year = startYear; year <= endYear; year++) {
+      years.push(year);
+    }
+
+    return { employeeId: value.employeeId, years };
   }
 
   private withEmployee(request: LeaveRequest): LeaveRequest {
