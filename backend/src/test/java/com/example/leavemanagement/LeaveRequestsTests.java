@@ -101,7 +101,7 @@ class LeaveRequestsTests {
 
         create(createDto(employee, LocalDate.of(2026, 3, 1), LocalDate.of(2026, 3, 3)))
                 .andExpect(status().isBadRequest())
-                .andExpect(content().string("Not enough vacation balance"));
+                .andExpect(jsonPath("$.message").value("Not enough vacation balance"));
 
         assertEquals(1, leaveRequests.count());
     }
@@ -136,7 +136,7 @@ class LeaveRequestsTests {
 
         create(createDto(employee, LocalDate.of(2026, 12, 30), LocalDate.of(2027, 1, 2)))
                 .andExpect(status().isBadRequest())
-                .andExpect(content().string(
+                .andExpect(jsonPath("$.message").value(
                         "Vacation requests spanning multiple calendar years must be submitted as separate requests"));
 
         assertEquals(0, leaveRequests.count());
@@ -148,7 +148,7 @@ class LeaveRequestsTests {
 
         create(createDto(employee, LocalDate.of(2026, 3, 3), LocalDate.of(2026, 3, 1)))
                 .andExpect(status().isBadRequest())
-                .andExpect(content().string("Start date must not be after end date"));
+                .andExpect(jsonPath("$.message").value("Start date must not be after end date"));
 
         assertEquals(0, leaveRequests.count());
     }
@@ -158,9 +158,21 @@ class LeaveRequestsTests {
         mockMvc.perform(post("/api/leave-requests")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{}"))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isBadRequest())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.message").isString());
 
         assertEquals(0, leaveRequests.count());
+    }
+
+    @Test
+    void malformedRequestBodyReturnsConsistentBadRequest() throws Exception {
+        mockMvc.perform(post("/api/leave-requests")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"employeeId\": 1, \"startDate\": \"not-a-date\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.message").value("Malformed request body"));
     }
 
     @Test
@@ -173,7 +185,7 @@ class LeaveRequestsTests {
 
         create(dto)
                 .andExpect(status().isNotFound())
-                .andExpect(content().string("Employee not found"));
+                .andExpect(jsonPath("$.message").value("Employee not found"));
     }
 
     @Test
@@ -193,7 +205,7 @@ class LeaveRequestsTests {
     void approvingNonexistentRequestReturnsNotFound() throws Exception {
         approve(Long.MAX_VALUE)
                 .andExpect(status().isNotFound())
-                .andExpect(content().string("Leave request not found"));
+                .andExpect(jsonPath("$.message").value("Leave request not found"));
     }
 
     @ParameterizedTest
@@ -205,7 +217,7 @@ class LeaveRequestsTests {
 
         approve(request.getId())
                 .andExpect(status().isConflict())
-                .andExpect(content().string("Only pending leave requests can be approved"));
+                .andExpect(jsonPath("$.message").value("Only pending leave requests can be approved"));
 
         assertEquals(statusValue, leaveRequests.findById(request.getId()).orElseThrow().getStatus());
     }
@@ -220,7 +232,7 @@ class LeaveRequestsTests {
 
         approve(pending.getId())
                 .andExpect(status().isConflict())
-                .andExpect(content().string("Not enough vacation balance to approve this request"));
+                .andExpect(jsonPath("$.message").value("Not enough vacation balance to approve this request"));
 
         assertEquals(LeaveStatus.PENDING, leaveRequests.findById(pending.getId()).orElseThrow().getStatus());
     }
