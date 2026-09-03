@@ -1,28 +1,52 @@
 package com.example.leavemanagement;
 
-import com.example.leavemanagement.controller.LeaveRequestsController;
 import com.example.leavemanagement.dto.CreateLeaveRequestDto;
+import com.example.leavemanagement.exception.LeaveRequestConflictException;
 import com.example.leavemanagement.model.Employee;
+import com.example.leavemanagement.model.LeaveRequest;
+import com.example.leavemanagement.model.LeaveStatus;
 import com.example.leavemanagement.model.LeaveType;
 import com.example.leavemanagement.repository.EmployeeRepository;
 import com.example.leavemanagement.repository.LeaveRequestRepository;
+import com.example.leavemanagement.service.LeaveRequestService;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.http.ResponseEntity;
+import org.springframework.http.MediaType;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.ResultActions;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.time.LocalDate;
+import java.time.temporal.ChronoUnit;
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static java.util.Collections.frequency;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-// Runs against a real, throwaway PostgreSQL started by Testcontainers.
-// (Docker must be available on the machine running the tests.)
 @SpringBootTest
+@AutoConfigureMockMvc
 @Testcontainers
 class LeaveRequestsTests {
 
@@ -37,7 +61,10 @@ class LeaveRequestsTests {
     }
 
     @Autowired
-    private LeaveRequestsController controller;
+    private MockMvc mockMvc;
+
+    @Autowired
+    private ObjectMapper objectMapper;
 
     @Autowired
     private EmployeeRepository employees;
@@ -45,31 +72,266 @@ class LeaveRequestsTests {
     @Autowired
     private LeaveRequestRepository leaveRequests;
 
-    @Test
-    void create_WithinQuota_Succeeds() {
-        // Arrange
-        Employee emp = new Employee();
-        emp.setName("Test Emp");
-        emp.setAnnualQuota(20);
-        employees.save(emp);
+    @Autowired
+    private LeaveRequestService leaveRequestService;
 
-        long before = leaveRequests.count();
-
-        CreateLeaveRequestDto dto = new CreateLeaveRequestDto();
-        dto.setEmployeeId(emp.getId());
-        dto.setType(LeaveType.VACATION);
-        dto.setStartDate(LocalDate.of(2026, 3, 1));
-        dto.setEndDate(LocalDate.of(2026, 3, 3)); // 3 days, well within the quota
-
-        // Act
-        ResponseEntity<?> result = controller.create(dto);
-
-        // Assert
-        assertTrue(result.getStatusCode().is2xxSuccessful());
-        assertEquals(before + 1, leaveRequests.count());
+    @BeforeEach
+    void cleanDatabase() {
+        leaveRequests.deleteAllInBatch();
+        employees.deleteAllInBatch();
     }
 
-    // TODO (candidate): add a test that proves the balance bug is fixed —
-    // an employee who has already used most of the quota should NOT be able
-    // to create a request that pushes them over the annual quota.
+    @Test
+    void createVacationWithinQuotaSucceeds() throws Exception {
+        Employee employee = saveEmployee(20);
+
+        create(createDto(employee, LocalDate.of(2026, 3, 1), LocalDate.of(2026, 3, 3)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.days").value(3))
+                .andExpect(jsonPath("$.status").value(LeaveStatus.PENDING.ordinal()));
+
+        assertEquals(1, leaveRequests.count());
+    }
+
+    @Test
+    void createVacationExceedingRemainingQuotaFails() throws Exception {
+        Employee employee = saveEmployee(20);
+        saveRequest(employee, LocalDate.of(2026, 1, 1), LocalDate.of(2026, 1, 18),
+                LeaveType.VACATION, LeaveStatus.APPROVED);
+
+        create(createDto(employee, LocalDate.of(2026, 3, 1), LocalDate.of(2026, 3, 3)))
+                .andExpect(status().isBadRequest())
+                .andExpect(content().string("Not enough vacation balance"));
+
+        assertEquals(1, leaveRequests.count());
+    }
+
+    @Test
+    void createVacationUsingExactlyRemainingQuotaSucceeds() throws Exception {
+        Employee employee = saveEmployee(20);
+        saveRequest(employee, LocalDate.of(2026, 1, 1), LocalDate.of(2026, 1, 18),
+                LeaveType.VACATION, LeaveStatus.APPROVED);
+
+        create(createDto(employee, LocalDate.of(2026, 3, 1), LocalDate.of(2026, 3, 2)))
+                .andExpect(status().isOk());
+
+        assertEquals(2, leaveRequests.count());
+    }
+
+    @Test
+    void approvedVacationFromPreviousYearDoesNotConsumeCurrentYearQuota() throws Exception {
+        Employee employee = saveEmployee(20);
+        saveRequest(employee, LocalDate.of(2025, 1, 1), LocalDate.of(2025, 1, 20),
+                LeaveType.VACATION, LeaveStatus.APPROVED);
+
+        create(createDto(employee, LocalDate.of(2026, 2, 1), LocalDate.of(2026, 2, 20)))
+                .andExpect(status().isOk());
+
+        assertEquals(2, leaveRequests.count());
+    }
+
+    @Test
+    void crossYearVacationIsRejected() throws Exception {
+        Employee employee = saveEmployee(20);
+
+        create(createDto(employee, LocalDate.of(2026, 12, 30), LocalDate.of(2027, 1, 2)))
+                .andExpect(status().isBadRequest())
+                .andExpect(content().string(
+                        "Vacation requests spanning multiple calendar years must be submitted as separate requests"));
+
+        assertEquals(0, leaveRequests.count());
+    }
+
+    @Test
+    void invalidDateOrderReturnsBadRequest() throws Exception {
+        Employee employee = saveEmployee(20);
+
+        create(createDto(employee, LocalDate.of(2026, 3, 3), LocalDate.of(2026, 3, 1)))
+                .andExpect(status().isBadRequest())
+                .andExpect(content().string("Start date must not be after end date"));
+
+        assertEquals(0, leaveRequests.count());
+    }
+
+    @Test
+    void missingRequiredFieldsReturnBadRequest() throws Exception {
+        mockMvc.perform(post("/api/leave-requests")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isBadRequest());
+
+        assertEquals(0, leaveRequests.count());
+    }
+
+    @Test
+    void employeeNotFoundReturnsNotFound() throws Exception {
+        CreateLeaveRequestDto dto = new CreateLeaveRequestDto();
+        dto.setEmployeeId(Long.MAX_VALUE);
+        dto.setType(LeaveType.VACATION);
+        dto.setStartDate(LocalDate.of(2026, 3, 1));
+        dto.setEndDate(LocalDate.of(2026, 3, 2));
+
+        create(dto)
+                .andExpect(status().isNotFound())
+                .andExpect(content().string("Employee not found"));
+    }
+
+    @Test
+    void pendingRequestCanBeApproved() throws Exception {
+        Employee employee = saveEmployee(20);
+        LeaveRequest pending = saveRequest(employee, LocalDate.of(2026, 3, 1), LocalDate.of(2026, 3, 3),
+                LeaveType.VACATION, LeaveStatus.PENDING);
+
+        approve(pending.getId())
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value(LeaveStatus.APPROVED.ordinal()));
+
+        assertEquals(LeaveStatus.APPROVED, leaveRequests.findById(pending.getId()).orElseThrow().getStatus());
+    }
+
+    @Test
+    void approvingNonexistentRequestReturnsNotFound() throws Exception {
+        approve(Long.MAX_VALUE)
+                .andExpect(status().isNotFound())
+                .andExpect(content().string("Leave request not found"));
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = LeaveStatus.class, names = {"APPROVED", "REJECTED"})
+    void approvingNonPendingRequestReturnsConflict(LeaveStatus statusValue) throws Exception {
+        Employee employee = saveEmployee(20);
+        LeaveRequest request = saveRequest(employee, LocalDate.of(2026, 3, 1), LocalDate.of(2026, 3, 2),
+                LeaveType.VACATION, statusValue);
+
+        approve(request.getId())
+                .andExpect(status().isConflict())
+                .andExpect(content().string("Only pending leave requests can be approved"));
+
+        assertEquals(statusValue, leaveRequests.findById(request.getId()).orElseThrow().getStatus());
+    }
+
+    @Test
+    void approvalRevalidatesVacationQuota() throws Exception {
+        Employee employee = saveEmployee(5);
+        LeaveRequest pending = leaveRequestService.create(
+                createDto(employee, LocalDate.of(2026, 3, 1), LocalDate.of(2026, 3, 5)));
+        saveRequest(employee, LocalDate.of(2026, 2, 1), LocalDate.of(2026, 2, 1),
+                LeaveType.VACATION, LeaveStatus.APPROVED);
+
+        approve(pending.getId())
+                .andExpect(status().isConflict())
+                .andExpect(content().string("Not enough vacation balance to approve this request"));
+
+        assertEquals(LeaveStatus.PENDING, leaveRequests.findById(pending.getId()).orElseThrow().getStatus());
+    }
+
+    @Test
+    void searchParameterCannotChangeQueryStructure() throws Exception {
+        Employee employee = saveEmployee(20);
+        employee.setName("Searchable Employee");
+        employees.save(employee);
+        saveRequest(employee, LocalDate.of(2026, 3, 1), LocalDate.of(2026, 3, 1),
+                LeaveType.SICK, LeaveStatus.PENDING);
+
+        mockMvc.perform(get("/api/leave-requests/search").param("name", "' OR 1=1 --"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$").isEmpty());
+    }
+
+    @Test
+    void concurrentApprovalsCannotJointlyExceedQuota() throws Exception {
+        Employee employee = saveEmployee(5);
+        LeaveRequest first = saveRequest(employee, LocalDate.of(2026, 3, 1), LocalDate.of(2026, 3, 5),
+                LeaveType.VACATION, LeaveStatus.PENDING);
+        LeaveRequest second = saveRequest(employee, LocalDate.of(2026, 4, 1), LocalDate.of(2026, 4, 5),
+                LeaveType.VACATION, LeaveStatus.PENDING);
+
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+
+        try {
+            Future<ApprovalOutcome> firstResult = executor.submit(approvalTask(first.getId(), ready, start));
+            Future<ApprovalOutcome> secondResult = executor.submit(approvalTask(second.getId(), ready, start));
+
+            assertTrue(ready.await(5, TimeUnit.SECONDS), "Approval tasks did not become ready in time");
+            start.countDown();
+
+            List<ApprovalOutcome> outcomes = List.of(
+                    firstResult.get(10, TimeUnit.SECONDS),
+                    secondResult.get(10, TimeUnit.SECONDS));
+
+            assertEquals(1, frequency(outcomes, ApprovalOutcome.APPROVED));
+            assertEquals(1, frequency(outcomes, ApprovalOutcome.CONFLICT));
+            assertEquals(5, leaveRequests.sumDaysForYear(
+                    employee.getId(), LeaveType.VACATION, LeaveStatus.APPROVED,
+                    LocalDate.of(2026, 1, 1), LocalDate.of(2026, 12, 31)));
+        } finally {
+            start.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    private Callable<ApprovalOutcome> approvalTask(Long requestId,
+                                                    CountDownLatch ready,
+                                                    CountDownLatch start) {
+        return () -> {
+            ready.countDown();
+            if (!start.await(5, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("Concurrent approval start timed out");
+            }
+            try {
+                leaveRequestService.approve(requestId);
+                return ApprovalOutcome.APPROVED;
+            } catch (LeaveRequestConflictException exception) {
+                return ApprovalOutcome.CONFLICT;
+            }
+        };
+    }
+
+    private Employee saveEmployee(int annualQuota) {
+        Employee employee = new Employee();
+        employee.setName("Test Employee");
+        employee.setAnnualQuota(annualQuota);
+        return employees.save(employee);
+    }
+
+    private LeaveRequest saveRequest(Employee employee,
+                                     LocalDate startDate,
+                                     LocalDate endDate,
+                                     LeaveType type,
+                                     LeaveStatus status) {
+        LeaveRequest request = new LeaveRequest();
+        request.setEmployeeId(employee.getId());
+        request.setType(type);
+        request.setStartDate(startDate);
+        request.setEndDate(endDate);
+        request.setDays((int) ChronoUnit.DAYS.between(startDate, endDate) + 1);
+        request.setStatus(status);
+        return leaveRequests.save(request);
+    }
+
+    private CreateLeaveRequestDto createDto(Employee employee, LocalDate startDate, LocalDate endDate) {
+        CreateLeaveRequestDto dto = new CreateLeaveRequestDto();
+        dto.setEmployeeId(employee.getId());
+        dto.setType(LeaveType.VACATION);
+        dto.setStartDate(startDate);
+        dto.setEndDate(endDate);
+        return dto;
+    }
+
+    private ResultActions create(CreateLeaveRequestDto dto) throws Exception {
+        return mockMvc.perform(post("/api/leave-requests")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(dto)));
+    }
+
+    private ResultActions approve(Long requestId) throws Exception {
+        return mockMvc.perform(post("/api/leave-requests/{id}/approve", requestId));
+    }
+
+    private enum ApprovalOutcome {
+        APPROVED,
+        CONFLICT
+    }
 }
